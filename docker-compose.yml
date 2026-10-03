@@ -1,0 +1,32 @@
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --node-ip ${NODE_IP:-127.0.0.1}
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-devsecretdevsecretdevsecretdevsecret}"
+      # Конфиг передаётся прямо здесь, без монтирования файлов:
+      # так не нужно настраивать File Sharing в Docker Desktop (Windows/macOS).
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: false
+    ports:
+      - "7880:7880"       # сигнализация (WebSocket)
+      - "7881:7881"       # медиа по TCP (запасной путь)
+      - "7882:7882/udp"   # медиа по UDP
+    restart: unless-stopped
+
+  app:
+    build: .
+    environment:
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-devsecretdevsecretdevsecretdevsecret}
+      LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:-ws://localhost:7880}
+      PORT: "3000"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - livekit
+    restart: unless-stopped

@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Голосовая комната</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #fff; --text: #1a1d21; --muted: #6b7280;
+      --accent: #2563eb; --danger: #dc2626; --ok: #16a34a; --border: #e5e7eb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #0f1115; --card: #181b21; --text: #e8eaed; --muted: #9aa0a6; --border: #2a2e36; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 16px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+    main { max-width: 480px; margin: 0 auto; padding: 24px 16px; }
+    h1 { font-size: 1.3rem; margin: 0 0 16px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    label { display: block; font-size: .85rem; color: var(--muted); margin: 0 0 4px; }
+    input { width: 100%; padding: 10px 12px; font: inherit; color: inherit; background: transparent;
+            border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; }
+    button { font: inherit; padding: 10px 16px; border: 0; border-radius: 8px; cursor: pointer;
+             background: var(--accent); color: #fff; }
+    button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+    button.danger { background: var(--danger); }
+    button:disabled { opacity: .5; cursor: default; }
+    .row { display: flex; gap: 8px; }
+    .row > * { flex: 1; }
+    ul { list-style: none; margin: 0; padding: 0; }
+    li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+    li:last-child { border-bottom: 0; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--border); flex: none; }
+    li.speaking .dot { background: var(--ok); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 25%, transparent); }
+    .tag { margin-left: auto; font-size: .8rem; color: var(--muted); text-align: right; }
+    .bar { height: 4px; width: 48px; border-radius: 2px; background: var(--border); overflow: hidden; flex: none; }
+    .bar > i { display: block; height: 100%; width: 0; background: var(--ok); }
+    #status { font-size: .9rem; color: var(--muted); min-height: 1.4em; margin-bottom: 12px; }
+    #status.error { color: var(--danger); }
+    #audioBtn { width: 100%; margin-bottom: 12px; background: var(--ok); }
+    details.card summary { cursor: pointer; font-size: .9rem; color: var(--muted); }
+    #log { margin: 12px 0 0; font: 12px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap;
+           max-height: 220px; overflow: auto; color: var(--muted); }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Голосовая комната</h1>
+
+  <section class="card" id="join">
+    <label for="name">Ваше имя</label>
+    <input id="name" maxlength="32" placeholder="Например, Аня" autocomplete="off">
+    <label for="room">Комната</label>
+    <input id="room" maxlength="32" value="test" autocomplete="off">
+    <button id="joinBtn">Войти и включить микрофон</button>
+  </section>
+
+  <section class="card" id="call" hidden>
+    <button id="audioBtn" hidden>Включить воспроизведение звука</button>
+    <div class="row" style="margin-bottom:12px">
+      <button id="muteBtn" class="secondary">Выключить микрофон</button>
+      <button id="leaveBtn" class="danger">Выйти</button>
+    </div>
+    <ul id="participants"></ul>
+  </section>
+
+  <div id="status"></div>
+
+  <details class="card" id="debug" open>
+    <summary>Диагностика (журнал событий)</summary>
+    <pre id="log"></pre>
+  </details>
+
+  <div id="audio" hidden></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+<script>
+  const { Room, RoomEvent, Track } = LivekitClient;
+
+  const $ = (id) => document.getElementById(id);
+  const statusEl = $('status');
+  let room = null;
+  let ticker = null;
+
+  function log(msg) {
+    const el = $('log');
+    el.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+    el.scrollTop = el.scrollHeight;
+    console.log(msg);
+  }
+
+  function setStatus(text, isError = false) {
+    statusEl.textContent = text;
+    statusEl.className = isError ? 'error' : '';
+  }
+
+  function remoteAudioState(p) {
+    const pub = p.getTrackPublication(Track.Source.Microphone);
+    if (!pub) return 'нет аудиотрека';
+    if (pub.isMuted) return 'микрофон выключен';
+    return pub.isSubscribed ? 'звук идёт' : 'трек есть, ждём подписку';
+  }
+
+  function renderParticipants() {
+    const list = $('participants');
+    list.replaceChildren();
+    if (!room) return;
+
+    const all = [room.localParticipant, ...room.remoteParticipants.values()];
+    for (const p of all) {
+      const isLocal = p === room.localParticipant;
+
+      const li = document.createElement('li');
+      if (p.isSpeaking) li.classList.add('speaking');
+
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+
+      const name = document.createElement('span');
+      name.textContent = p.name || p.identity;
+
+      const bar = document.createElement('span');
+      bar.className = 'bar';
+      const fill = document.createElement('i');
+      fill.style.width = `${Math.min(100, Math.round((p.audioLevel || 0) * 300))}%`;
+      bar.append(fill);
+
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = isLocal
+        ? (p.isMicrophoneEnabled ? 'вы, микрофон включён' : 'вы, микрофон выключен')
+        : remoteAudioState(p);
+
+      li.append(dot, name, bar, tag);
+      list.append(li);
+    }
+  }
+
+  function watchRoom(r) {
+    r
+      .on(RoomEvent.ConnectionStateChanged, (s) => log(`Состояние соединения: ${s}`))
+      .on(RoomEvent.SignalConnected, () => log('Сигнальное соединение (WebSocket) установлено'))
+      .on(RoomEvent.Reconnecting, () => log('Переподключение…'))
+      .on(RoomEvent.Reconnected, () => log('Переподключились'))
+      .on(RoomEvent.MediaDevicesError, (e) => log(`Ошибка микрофона: ${e.message}`))
+      .on(RoomEvent.ParticipantConnected, (p) => { log(`Вошёл участник: ${p.name || p.identity}`); renderParticipants(); })
+      .on(RoomEvent.ParticipantDisconnected, (p) => { log(`Вышел участник: ${p.name || p.identity}`); renderParticipants(); })
+      .on(RoomEvent.LocalTrackPublished, (pub) => log(`Ваш трек опубликован на сервере: ${pub.kind}`))
+      .on(RoomEvent.TrackPublished, (pub, p) => log(`У ${p.name || p.identity} появился трек: ${pub.kind}`))
+      .on(RoomEvent.TrackSubscribed, (track, pub, p) => {
+        log(`Получаю трек (${track.kind}) от ${p.name || p.identity}`);
+        if (track.kind === Track.Kind.Audio) $('audio').append(track.attach());
+        renderParticipants();
+      })
+      .on(RoomEvent.TrackSubscriptionFailed, (sid, p) => log(`Не удалось подписаться на трек ${sid} от ${p.name || p.identity}`))
+      .on(RoomEvent.TrackUnsubscribed, (track) => track.detach().forEach((el) => el.remove()))
+      .on(RoomEvent.TrackMuted, renderParticipants)
+      .on(RoomEvent.TrackUnmuted, renderParticipants)
+      .on(RoomEvent.ActiveSpeakersChanged, renderParticipants)
+      .on(RoomEvent.AudioPlaybackStatusChanged, () => {
+        const ok = r.canPlaybackAudio;
+        log(`Воспроизведение звука браузером: ${ok ? 'разрешено' : 'ЗАБЛОКИРОВАНО (нажмите кнопку)'}`);
+        $('audioBtn').hidden = ok;
+      })
+      .on(RoomEvent.Disconnected, (reason) => { log(`Отключено (причина: ${reason ?? 'не указана'})`); leaveUi(); setStatus('Соединение закрыто'); });
+  }
+
+  async function join() {
+    const name = $('name').value.trim();
+    const roomName = $('room').value.trim() || 'test';
+    if (!name) { setStatus('Введите имя', true); return; }
+
+    $('joinBtn').disabled = true;
+    setStatus('Получаю токен…');
+
+    try {
+      const res = await fetch(`/api/token?name=${encodeURIComponent(name)}&room=${encodeURIComponent(roomName)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Не удалось получить токен');
+      log(`Токен получен, адрес LiveKit: ${data.url}`);
+
+      room = new Room({
+        adaptiveStream: true,
+        dynacast: true,
+        audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      watchRoom(room);
+
+      setStatus('Подключаюсь к LiveKit…');
+      await room.connect(data.url, data.token);
+      await room.startAudio(); // клик пользователя разрешает автовоспроизведение
+      await room.localParticipant.setMicrophoneEnabled(true);
+
+      $('join').hidden = true;
+      $('call').hidden = false;
+      $('audioBtn').hidden = room.canPlaybackAudio;
+      setStatus(`Вы в комнате «${roomName}»`);
+      renderParticipants();
+      ticker = setInterval(renderParticipants, 300); // обновляем индикаторы уровня звука
+    } catch (err) {
+      console.error(err);
+      log(`Ошибка: ${err.message || err}`);
+      setStatus(err.message || String(err), true);
+      if (room) { room.disconnect(); room = null; }
+      $('joinBtn').disabled = false;
+    }
+  }
+
+  async function toggleMute() {
+    if (!room) return;
+    const enabled = room.localParticipant.isMicrophoneEnabled;
+    await room.localParticipant.setMicrophoneEnabled(!enabled);
+    $('muteBtn').textContent = enabled ? 'Включить микрофон' : 'Выключить микрофон';
+    renderParticipants();
+  }
+
+  function leaveUi() {
+    clearInterval(ticker);
+    ticker = null;
+    $('join').hidden = false;
+    $('call').hidden = true;
+    $('joinBtn').disabled = false;
+    $('audio').replaceChildren();
+    $('muteBtn').textContent = 'Выключить микрофон';
+    room = null;
+  }
+
+  $('joinBtn').addEventListener('click', join);
+  $('muteBtn').addEventListener('click', toggleMute);
+  $('audioBtn').addEventListener('click', async () => { await room?.startAudio(); $('audioBtn').hidden = true; });
+  $('leaveBtn').addEventListener('click', () => { if (room) room.disconnect(); });
+  $('name').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+
+  if (!window.isSecureContext) {
+    setStatus('Микрофон работает только на localhost или по HTTPS.', true);
+  }
+  log(`livekit-client ${LivekitClient.version || ''}, secure context: ${window.isSecureContext}`);
+</script>
+</body>
+</html>

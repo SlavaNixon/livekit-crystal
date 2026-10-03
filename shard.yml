@@ -1,0 +1,14 @@
+name: livekit-voice
+version: 0.1.0
+
+targets:
+  app:
+    main: src/app.cr
+
+dependencies:
+  kemal:
+    github: kemalcr/kemal
+
+crystal: ">= 1.10.0"
+
+license: MIT

@@ -1,0 +1,8 @@
+# Конфиг сервера LiveKit для локального теста.
+# API-ключи передаются через переменную LIVEKIT_KEYS (см. docker-compose.yml).
+port: 7880
+
+rtc:
+  tcp_port: 7881        # запасной канал по TCP, если UDP заблокирован
+  udp_port: 7882        # весь медиатрафик по одному UDP-порту (удобно для Docker)
+  use_external_ip: false
